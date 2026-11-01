@@ -65,82 +65,112 @@
       app.querySelector(".env-btn").addEventListener("click", renderGame);
     }
 
-    /* ② ミニゲーム：神経衰弱（同じ絵のカードをそろえる） */
-    function renderGame() {
-      const g = SITE.game;
-      const deck = [...g.cards, ...g.cards]
-        .map((c) => ({ c, r: Math.random() }))
-        .sort((a, b) => a.r - b.r)
-        .map((x) => x.c);
-      const cards = deck.map((c, i) => `
-        <button class="mc" type="button" data-i="${i}" aria-label="カード">
-          <span class="mc-inner">
-            <span class="mc-face mc-back">${esc(SITE.logo)}</span>
-            <span class="mc-face mc-front">${esc(c)}</span>
-          </span>
-        </button>`).join("");
-
+    /* ② ミニゲーム（共通の部品） */
+    function gameScreen(hud, body, tip) {
       show(`
         <section class="screen cover">
           <div class="game-card">
             <p class="game-head">GAME</p>
-            <p class="game-title">${esc(g.title)}</p>
-            <p class="game-hud">
-              <span>そろった <b class="pairs">0</b> / ${g.cards.length}</span>
-              <span>めくった回数 <b class="turns">0</b></span>
-            </p>
-            <div class="board">${cards}</div>
+            <p class="game-title">${esc(SITE.game.title)}</p>
+            <p class="game-hud">${hud}</p>
+            ${body}
             <p class="game-msg" aria-live="polite"></p>
-            <p class="game-tip">2枚ずつめくって、同じ絵をさがしてね</p>
+            <p class="game-tip">${tip}</p>
           </div>
         </section>`, "is-cover");
-
-      const btns = [...app.querySelectorAll(".mc")];
-      const pairsEl = app.querySelector(".pairs");
-      const turnsEl = app.querySelector(".turns");
-      const msg = app.querySelector(".game-msg");
-      let open = [], pairs = 0, turns = 0, busy = false;
-
-      function bump(el, n) {
-        el.textContent = n;
-        el.classList.remove("bump");
-        void el.offsetWidth;
-        el.classList.add("bump");
+      return app.querySelector(".game-msg");
+    }
+    function bump(el, n) {
+      el.textContent = n;
+      el.classList.remove("bump");
+      void el.offsetWidth;
+      el.classList.add("bump");
+    }
+    function say(msg, text, big = false) {
+      msg.className = big ? "game-msg big" : "game-msg";
+      msg.textContent = text;
+    }
+    function clearGame(msg, text = "CLEAR!") {
+      say(msg, text, true);
+      setTimeout(renderOpening, 1500);
+    }
+    function shake(el) {
+      el.classList.remove("g-miss");
+      void el.offsetWidth;
+      el.classList.add("g-miss");
+    }
+    const rand = (n) => Math.floor(Math.random() * n);
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    // キャンバスは 300×420 の座標で描く（くっきり見えるよう2倍の解像度）
+    function canvas2x(cv) {
+      const ctx = cv.getContext("2d");
+      ctx.scale(2, 2);
+      return ctx;
+    }
+    function pointerX(cv, e) {
+      const r = cv.getBoundingClientRect();
+      return (e.clientX - r.left) * (300 / r.width);
+    }
+    // 画面が切りかわるまで毎フレーム step(秒) を呼ぶ
+    function loop(cv, step) {
+      let last = performance.now();
+      function frame(t) {
+        if (!cv.isConnected) return;
+        const dt = Math.min((t - last) / 1000, 0.033);
+        last = t;
+        step(dt);
+        requestAnimationFrame(frame);
       }
+      requestAnimationFrame(frame);
+    }
+    // 短い効果音
+    let audio;
+    function beep(freq, ms = 120) {
+      try {
+        audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+        const o = audio.createOscillator(), v = audio.createGain();
+        o.type = "sine";
+        o.frequency.value = freq;
+        v.gain.setValueAtTime(0.15, audio.currentTime);
+        v.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + ms / 1000);
+        o.connect(v).connect(audio.destination);
+        o.start();
+        o.stop(audio.currentTime + ms / 1000);
+      } catch (e) {}
+    }
 
-      btns.forEach((btn) => btn.addEventListener("click", () => {
-        if (busy || btn.classList.contains("up") || btn.classList.contains("got")) return;
-        btn.classList.add("up");
-        open.push(btn);
-        if (open.length < 2) return;
+    /* ② ミニゲーム：色ちがいさがし */
+    function renderGame() {
+      const g = SITE.game;
+      const msg = gameScreen(
+        `<span>レベル <b class="cnt">1</b> / ${g.levels}</span>`,
+        `<div class="tiles color-tiles"></div>`,
+        "1つだけ色がちがうマスをタップ！だんだんむずかしくなるよ");
+      const box = app.querySelector(".tiles");
+      const cnt = app.querySelector(".cnt");
+      let level = 1;
 
-        bump(turnsEl, ++turns);
-        const [a, b] = open;
-        open = [];
-        if (deck[a.dataset.i] === deck[b.dataset.i]) {
-          a.classList.replace("up", "got");
-          b.classList.replace("up", "got");
-          bump(pairsEl, ++pairs);
-          msg.className = "game-msg";
-          msg.textContent = "そろった！";
-          if (pairs === g.cards.length) {
-            msg.className = "game-msg big";
-            msg.textContent = "CLEAR!";
-            setTimeout(renderOpening, 1400);
-          }
-        } else {
-          busy = true;
-          msg.className = "game-msg";
-          msg.textContent = "ざんねん…";
-          setTimeout(() => { a.classList.add("miss"); b.classList.add("miss"); }, 350);
-          setTimeout(() => {
-            a.classList.remove("up", "miss");
-            b.classList.remove("up", "miss");
-            msg.textContent = "";
-            busy = false;
-          }, 1000);
-        }
-      }));
+      function build() {
+        const size = Math.min(2 + Math.floor(level / 2), 5);
+        const hue = rand(360), diff = Math.max(5, 22 - level * 2);
+        const odd = rand(size * size);
+        box.style.setProperty("--n", size);
+        box.innerHTML = Array.from({ length: size * size }, (_, i) =>
+          `<button class="tile" type="button" data-odd="${i === odd ? 1 : 0}" aria-label="マス"
+            style="background:hsl(${hue}, 55%, ${i === odd ? 60 + diff : 60}%)"></button>`).join("");
+      }
+      box.addEventListener("click", (e) => {
+        const tile = e.target.closest(".tile");
+        if (!tile || level > g.levels) return;
+        if (tile.dataset.odd !== "1") { shake(tile); say(msg, "ちがうよ"); beep(180, 160); return; }
+        beep(520 + level * 40);
+        level++;
+        if (level > g.levels) { clearGame(msg); return; }
+        say(msg, "せいかい！");
+        bump(cnt, level);
+        build();
+      });
+      build();
     }
 
     /* ③ 手紙がひらくアニメーション */
